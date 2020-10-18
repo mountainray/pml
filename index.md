@@ -142,9 +142,8 @@ We can see above that we would have XXXXX
 
 The variables selected as important are below:
 
-
 ## Testing the models
-With a final model chosen (in the case of GBM), we have three models to run against the validation subset of our data.  Recall these models were built on 70% of the training data, leaving 30% as a completely fresh sample.  
+With a final model chosen (in the case of GBM), we have three models to run against the validation subset of our data.  Recall these models were built on 30% of the training data, leaving 70% as a completely fresh sample.  
 
 From the `caret` documentation...For multi-class outcomes, the problem is decomposed into all pair-wise problems and the area under the curve is calculated for each class pair (i.e. class 1 vs. class 2, class 2 vs. class 3 etc.). For a specific class, the maximum area under the curve across the relevant pair-wise AUC’s is used as the variable importance measure.
 

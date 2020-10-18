@@ -23,7 +23,8 @@ suppressPackageStartupMessages(library(gridExtra))
 suppressPackageStartupMessages(library(adabag))
 suppressPackageStartupMessages(library(fastAdaboost))
 suppressPackageStartupMessages(library(rlist))
-library(stringi)
+suppressPackageStartupMessages(library(stringi))
+
 high_correlation_cutoff_no<-.8
 high_correlation_cutoff_yes<-.8
 
@@ -221,11 +222,11 @@ The summarized model results were then examined and the model chosen.  In this c
 
 ```{r 'run settings', echo=F}
 #############################################################################################################
-testrun_portion<-.1
-testrun_foldsx<-4
-testrun_repeatsx<-2
+# testrun_portion<-.1
+# testrun_foldsx<-4
+# testrun_repeatsx<-2
 
-final_portion<-.7
+final_portion<-.3
 final_foldsx<-2
 final_repeatsx<-2
 #############################################################################################################
@@ -256,7 +257,7 @@ gbmGrid<-expand.grid(interaction.depth = c(1, 5, 10),
 nrow(gbmGrid)
 head(gbmGrid)
 
-fitControl<-trainControl(method = "repeatedcv", number = 4, repeats = 2, allowParallel = T)
+fitControl<-trainControl(method = "repeatedcv", number = 2, repeats = 2, allowParallel = T)
 
 set.seed(825)
 
@@ -700,7 +701,6 @@ ggplot(resamps)+aes(color=resamps$models)+ggtitle("Resamples Stability")
 We can see above that we would have XXXXX 
 
 The variables selected as important are below:
-
 
 ## Testing the models
 With a final model chosen (in the case of GBM), we have three models to run against the validation subset of our data.  Recall these models were built on `r final_portion*100`% of the training data, leaving `r (1-final_portion)*100`% as a completely fresh sample.  
