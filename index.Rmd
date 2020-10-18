@@ -12,7 +12,7 @@ library(knitr)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r 'make data', echo=F, warning=F, results='hide', message=F}
+```{r 'make-data', echo=F, warning=F, results='hide', message=F}
 # quiet load libraries
 suppressPackageStartupMessages(library(tidyverse))
 suppressPackageStartupMessages(library(rattle))
@@ -164,7 +164,7 @@ The data came in the form of a comma separated file with 160 features and `r nro
 #### Character and Time variable reduction
 Sample prints and diagnostics identified a small subset of variables that we set aside as they describe elements not included in this effort.  For example, the `user_name` variable adds a user-specific dimension if included in the models, we are trying to build here a classifier independent of user.  Also, the usefullness of the time variables was difficult to assess, the [original paper](http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) goes into more detail on how these "yes" records are calculated (e.g., sliding 2.5s intervals).  The table below summarizes our first attempt to reduce covariates.
 
-```{r 'junk vars table', echo=F}
+```{r 'junk-vars table', echo=F}
 junk_drops<-data.frame(
 varmap[1:7, 1:2], 
 description=c(
@@ -192,7 +192,7 @@ With relatively high dimensionality, summary functions were used to highlight ch
 #### Highly correlated variable reduction
 The `cor` function was used to identify correlations above `r high_correlation_cutoff_no*100` percent, the user sets the cutoff value at the top of the code. Currently this is set at `r high_correlation_cutoff_no`, we found `r nrow(filter(varmap, is.na(high_corr_no)==F))` highly correlated variables in the "no" new_window data.  As we know the nature of the measurements should include things that will correlate (there are only three dimensions being measured on a single body with a limited, intended motion), we leave some correlated covariates in the model (i.e., we don't exclude all correlated varaiables).  Below is a summary drawn from the `varmap` dataset created in the processing:
 
-```{r 'high correlation table', echo=F}
+```{r 'high-correlation-table', echo=F}
 nox<-filter(varmap, is.na(high_corr_no)==F)%>%select(varname, varindex, high_corr_no)
 knitr::kable(nox[1:10,], caption = str_c("**High Correlation variables removed from consideration (n=", nrow(nox),", sample of 10 below)**"))
 ```
@@ -200,7 +200,7 @@ knitr::kable(nox[1:10,], caption = str_c("**High Correlation variables removed f
 #### Low or near-zero variance variable reduction
 In a similar fashion, the r function `nearzeroVariance` was used to identify variables that would add little additional information to our models.  We again examined the output and concluded these would be left out.  This process identified `r nrow(filter(varmap, is.na(nzv_no)==F))` variables with low variance, these were removed.
 
-```{r 'nzv reduction table', echo=F}
+```{r 'nzv-reduction-table', echo=F}
 nox<-filter(varmap, is.na(nzv_no)==F & is.na(high_corr_no)==T & is.na(source1)==T)%>%select(varname, varindex, freqRatio, percentUnique, zeroVar)
 knitr::kable(nox[1:10,], caption = str_c("**Near-zero Variance variables removed from consideration (n=", nrow(nox),", sample of 10 below)**"))
 ```
@@ -220,7 +220,7 @@ The summarized model results were then examined and the model chosen.  In this c
 
 #### Gradient Boosting Model (GBM)
 
-```{r 'run settings', echo=F}
+```{r 'run-settings', echo=F}
 #############################################################################################################
 # testrun_portion<-.1
 # testrun_foldsx<-4
@@ -312,7 +312,7 @@ sum(r$good/20)
 
 The Gradient Boosting Model was of interest -- particularly in the spirit of model tuning.  A `caret` grid of model tuning features was built to generate estimates using a variety of the `gbm` tuning parameters.  Below are the results, where one can see the increase in model performance as we adjust the required minimum in each branch of the tree (these form the columns), as well as how much information is retained for future branch development (shrinkage, forming the plot rows).  The plots themselves are of increasing accuracy, as we subject the model to more boosting iterations.  The model results are gathered and summarized, and we have a set of `r nrow(gbmGrid)` model objects in the end.  Using this approach, we have models competing with each other on various terms, and we can home in on patterns observed in the cross validation.
 
-```{r 'plots gbm', fig.width=8, fig.height=5, fig.align='center', dpi=300, echo=F}
+```{r 'plots-gbm', fig.width=8, fig.height=5, fig.align='center', dpi=300, echo=F}
 ggplot(gbmFit_dotx, main="gbmFit_dotx")+ggtitle("Repeated Cross Validation, GBM tuning matrix")
 ```
 
@@ -688,7 +688,7 @@ nrow(r)
 sum(r$good/20)
 ```
 
-```{r 'resamples analysis', echo=F, warning=F, message=F, fig.width=8, fig.height=4, fig.align='center', comment="", dpi=300}
+```{r 'resamples-analysis', echo=F, warning=F, message=F, fig.width=8, fig.height=4, fig.align='center', comment="", dpi=300}
 resamps<-resamples(list(
 	gbm = gbmFit_dotxfinal,
 	ldabag = ldaFit_dotxfinal,
@@ -707,7 +707,7 @@ With a final model chosen (in the case of GBM), we have three models to run agai
 
 From the `caret` documentation...For multi-class outcomes, the problem is decomposed into all pair-wise problems and the area under the curve is calculated for each class pair (i.e. class 1 vs. class 2, class 2 vs. class 3 etc.). For a specific class, the maximum area under the curve across the relevant pair-wise AUC’s is used as the variable importance measure.
 
-```{r 'plot predictions', echo=F, fig.width=8, fig.height=5, fig.cap="**Prediction versus Truth**", fig.align='center', dpi=300}
+```{r 'plot-predictions', echo=F, fig.width=8, fig.height=5, fig.cap="**Prediction versus Truth**", fig.align='center', dpi=300}
 freshyx<-predict(impute_gbm, freshy_gbm)
 gbm<-ggplot(mapping=aes(x=freshy_gbm$classe, y=predict(gbmFit_dotxfinal, freshyx), color=freshy_gbm$classe))+
        	geom_jitter(show.legend = F)+xlab("")+ylab("Predicted classe")+ggtitle("GBM")
