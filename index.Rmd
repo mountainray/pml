@@ -1,0 +1,746 @@
+---
+title: "Practical Machine Learning course project"
+author: "Ray Bem"
+date: "10/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r 'make data', echo=F, warning=F, results='hide', message=F}
+# quiet load libraries
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(rattle))
+suppressPackageStartupMessages(library(Hmisc))
+suppressPackageStartupMessages(library(corrgram))
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(adabag))
+suppressPackageStartupMessages(library(fastAdaboost))
+suppressPackageStartupMessages(library(rlist))
+library(stringi)
+high_correlation_cutoff_no<-.8
+high_correlation_cutoff_yes<-.8
+
+original_training<-data.frame(read_csv("pml-training.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+TESTING<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+TESTING
+########################################
+TESTING_net_new<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+
+names(TESTING_net_new)[which(!names(TESTING_net_new) %in% names(original_training))]
+names(original_training)[which(!names(original_training) %in% names(TESTING_net_new))]
+TESTING_net_new<-setdiff(TESTING_net_new[,-15],original_training[,-c(1,16)])
+
+head(TESTING_net_new[1:10,1:10])
+########################################
+
+
+#TESTING<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+dim(original_training)
+names(original_training)
+str(original_training[,1:10])
+varmap_original<-data.frame(
+	varname=colnames(original_training),
+	varindex=c(1:length(colnames(original_training))), stringsAsFactors = F)
+vartypes<-data.frame(typex=sapply(original_training, typeof), varname=colnames(original_training), stringsAsFactors = F)
+varmap_original<-left_join(varmap_original, vartypes)
+dim(original_training)
+
+# split off junk variables, but have them avaialable as needed...
+junk_frame<-select(original_training, user_name, cvtd_timestamp, new_window, X1, raw_timestamp_part_1, raw_timestamp_part_2, num_window)
+head(junk_frame)
+
+# remove the summary records here, maybe deal with later (new_window=="yes")
+training_new_window_no<-filter(original_training, new_window=="no")%>%select(-c(user_name, cvtd_timestamp, X1, raw_timestamp_part_1, raw_timestamp_part_2, num_window, new_window))
+training_new_window_yes<-filter(original_training, new_window=="yes")%>%select(-c(user_name, cvtd_timestamp, X1, raw_timestamp_part_1, raw_timestamp_part_2, num_window, new_window))
+head(training_new_window_no[1:10,1:10])
+head(training_new_window_yes[1:10,1:10])
+
+# reorder columns, character variables up front for easier subsetting
+df_charvars_check<-data.frame(sapply(names(training_new_window_no), function(x){is.character(training_new_window_no[,x])}))
+newvarlist<-c(which(df_charvars_check>0),which(df_charvars_check<1))
+training_new_window_no<-training_new_window_no[,newvarlist]
+str(training_new_window_no[,1:10])
+dim(training_new_window_no)
+
+df_charvars_check<-data.frame(sapply(names(training_new_window_yes), function(x){is.character(training_new_window_yes[,x])}))
+newvarlist<-c(which(df_charvars_check>0),which(df_charvars_check<1))
+training_new_window_yes<-training_new_window_yes[,newvarlist]
+dim(training_new_window_yes)
+head(training_new_window_yes[1:10,1:10])
+
+# identify very low variance variables
+nzv_no<-data.frame(nearZeroVar(training_new_window_no, saveMetrics = T), varname=names(training_new_window_no), nzv_no=rep("no", length(names(training_new_window_no))), stringsAsFactors = F)%>%filter(zeroVar==TRUE & near(percentUnique,0))
+dim(nzv_no)
+nzv_yes<-data.frame(nearZeroVar(training_new_window_yes, saveMetrics = T), varname=names(training_new_window_yes), nzv_yes=rep("yes", length(names(training_new_window_yes))), stringsAsFactors = F)%>%filter(zeroVar==TRUE & near(percentUnique,0))
+dim(nzv_yes)
+
+(lst_nzv_reductions_no<-which(names(training_new_window_no) %in% as.list(nzv_no$name)))
+(lst_nzv_reductions_yes<-which(names(training_new_window_yes) %in% as.list(nzv_yes$name)))
+
+# identify high correlation variables, will remove later, adjust cutoff
+corr_matrix<-abs(cor(training_new_window_no[,-1]))
+diag(corr_matrix)<-0
+high_corr_no<-unique(names(which(corr_matrix>high_correlation_cutoff_no, arr.ind = T)[,1]))
+(lst_high_corr_no<-which(names(training_new_window_no) %in% high_corr_no))
+
+corr_matrix<-abs(cor(training_new_window_yes[,-1]))
+diag(corr_matrix)<-0
+high_corr_yes<-unique(names(which(corr_matrix>high_correlation_cutoff_yes, arr.ind = T)[,1]))
+(lst_high_corr_yes<-which(names(training_new_window_yes) %in% high_corr_yes))
+
+
+######### NEED TO DISTINGUISH YES NO VERSIONS OF DROPS IN VARMAP...!!!!!!!!!!!!!!!!!!!!!!!
+nrow(nzv_yes)-nrow(inner_join(nzv_no, nzv_yes, by = c("freqRatio", "percentUnique", "zeroVar", "nzv", "varname")))
+varmap<-left_join(varmap_original, data.frame(varname=names(junk_frame), source1="junk both", junk_status="junk"))%>%
+	left_join(data.frame(varname=high_corr_no, high_corr_no=str_c("corr above ", high_correlation_cutoff_no)))%>%
+	left_join(data.frame(varname=high_corr_yes, high_corr_yes=str_c("corr above ", high_correlation_cutoff_yes)))%>%
+	left_join(nzv_no)%>%left_join(nzv_yes)
+head(varmap,30)
+
+clean_no<-which(names(training_new_window_no) %in% as.list(filter(varmap, is.na(junk_status)==T & is.na(nzv_no)==T & is.na(high_corr_no)==T))$varname)
+clean_yes<-which(names(training_new_window_yes) %in% as.list(filter(varmap, is.na(junk_status)==T & is.na(nzv_yes)==T & is.na(high_corr_yes)==T))$varname)
+
+no_final<-training_new_window_no[,clean_no]
+head(no_final)
+yes_final<-training_new_window_yes[,clean_yes]
+head(yes_final)
+
+# identify missing values
+length(which(sapply(names(no_final), function(x) sum(is.na(no_final[,x]))>0)))
+length(which(sapply(names(yes_final), function(x) sum(is.na(yes_final[,x]))>0)))
+
+# update varmap
+tmp<-data.frame(count_missing_no=sapply(names(no_final), function(x) sum(is.na(no_final[,x]))))
+varmap<-left_join(varmap, data.frame(varname=rownames(tmp), tmp), by = "varname")
+tmp<-data.frame(count_missing_yes=sapply(names(yes_final), function(x) sum(is.na(yes_final[,x]))))
+varmap<-left_join(varmap, data.frame(varname=rownames(tmp), tmp), by = "varname")
+
+TESTING<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+TESTING
+str(TESTING)
+########################################
+TESTING_net_new<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+str(TESTING_net_new)
+# names(TESTING_net_new)
+# names(TESTING)
+names(TESTING_net_new)[15]<-"skewness_roll_belt.1"
+names(TESTING_net_new)[which(!names(TESTING_net_new) %in% names(TESTING))]
+names(original_training)[which(!names(original_training) %in% names(TESTING_net_new))]
+TESTING_net_new<-setdiff(TESTING_net_new[,-15],original_training[,-c(1,16)])
+nrow(inner_join(original_training, TESTING_net_new))
+#head(TESTING_net_new[1:10,1:10])
+
+TESTING<-filter(TESTING, new_window=="no")%>%select(-c(user_name, cvtd_timestamp, X1, raw_timestamp_part_1, raw_timestamp_part_2, num_window, new_window))
+TESTING_net_new<-filter(TESTING_net_new, new_window=="no")%>%select(-c(user_name, cvtd_timestamp, raw_timestamp_part_1, raw_timestamp_part_2, num_window, new_window))
+
+#clean_no<-which(names(training_new_window_no) %in% as.list(filter(varmap, is.na(junk_status)==T & is.na(nzv_no)==T & is.na(high_corr_no)==T))$varname)
+clean_no_TESTING<-which(names(TESTING) %in% as.list(filter(varmap, is.na(nzv_no)==T & is.na(high_corr_no)==T))$varname)
+clean_no_TESTING_net_new<-which(names(TESTING_net_new) %in% as.list(filter(varmap, is.na(nzv_no)==T & is.na(high_corr_no)==T))$varname)
+
+TESTING_net_new<-TESTING_net_new[,clean_no_TESTING_net_new]
+TESTING<-TESTING[,clean_no_TESTING]
+
+dim(TESTING_net_new)
+dim(TESTING)
+
+head(TESTING[1:10,1:10])
+head(TESTING_net_new[1:10,1:10])
+```
+
+## Synopsis
+
+### Exploratory Data Analysis
+
+The data came in the form of a comma separated file with 160 features and `r nrow(original_training)` observations.  
+
+#### Character and Time variable reduction
+Sample prints and diagnostics identified a small subset of variables that we set aside as they describe elements not included in this effort.  For example, the `user_name` variable adds a user-specific dimension if included in the models, we are trying to build here a classifier independent of user.  Also, the usefullness of the time variables was difficult to assess, the [original paper](http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) goes into more detail on how these "yes" records are calculated (e.g., sliding 2.5s intervals).  The table below summarizes our first attempt to reduce covariates.
+
+```{r 'junk vars table', echo=F}
+junk_drops<-data.frame(
+varmap[1:7, 1:2], 
+description=c(
+	"a sequential record id",
+	"study participant name",
+	"raw timestamp part 1", 
+	"raw timestamp part 2", 
+	"converted timestamp",
+	"new_window",
+	"num_window"), 
+reason_removed=c(
+"obviously this would distort the model if left in", 
+"we want to predict classe for any person, therefore removed",
+"time disregarded in this analysis",
+"",
+"",
+"these are the 'yes' data, n=406",
+"an incremental window counter"))
+
+knitr::kable(junk_drops, caption = str_c("**Character and Time variables removed from consideration (n=7)**"))
+```
+
+With relatively high dimensionality, summary functions were used to highlight characteristics.  The first aspect examined was the `new_window` variable.  This was determined to be a summarization of detail records tagged with "no", and set aside early in the code.  In the "yes" data, most columns had more data for several fields, when compared with the "no" data.  As our goal is the simplest classifier as possible, and the summary data looked so much different than the bulk of the data, these were left out (n=406).  The remainder of this analysis focuses on the "no" data, `r nrow(no_final)` records.
+
+#### Highly correlated variable reduction
+The `cor` function was used to identify correlations above `r high_correlation_cutoff_no*100` percent, the user sets the cutoff value at the top of the code. Currently this is set at `r high_correlation_cutoff_no`, we found `r nrow(filter(varmap, is.na(high_corr_no)==F))` highly correlated variables in the "no" new_window data.  As we know the nature of the measurements should include things that will correlate (there are only three dimensions being measured on a single body with a limited, intended motion), we leave some correlated covariates in the model (i.e., we don't exclude all correlated varaiables).  Below is a summary drawn from the `varmap` dataset created in the processing:
+
+```{r 'high correlation table', echo=F}
+nox<-filter(varmap, is.na(high_corr_no)==F)%>%select(varname, varindex, high_corr_no)
+knitr::kable(nox[1:10,], caption = str_c("**High Correlation variables removed from consideration (n=", nrow(nox),", sample of 10 below)**"))
+```
+
+#### Low or near-zero variance variable reduction
+In a similar fashion, the r function `nearzeroVariance` was used to identify variables that would add little additional information to our models.  We again examined the output and concluded these would be left out.  This process identified `r nrow(filter(varmap, is.na(nzv_no)==F))` variables with low variance, these were removed.
+
+```{r 'nzv reduction table', echo=F}
+nox<-filter(varmap, is.na(nzv_no)==F & is.na(high_corr_no)==T & is.na(source1)==T)%>%select(varname, varindex, freqRatio, percentUnique, zeroVar)
+knitr::kable(nox[1:10,], caption = str_c("**Near-zero Variance variables removed from consideration (n=", nrow(nox),", sample of 10 below)**"))
+```
+
+#### Missing data
+Finally, missing data were explored.  At this point we have only the detail "no" data, and highly correlated and near-zero variance variables have been removed.  We observe no missing data, therefore our model choices do not require any imputation of data.
+
+#### Final data
+This yields a final modelling dataset having the following characteristics...
+
+## Building the classification model
+A *modelling process* was built to more easily explore the data.  The R package `caret` was used to create data partitions separating training data into a set to build models on, and a set to test.  These test data are used afterwards to assess our estimated out of sample error rate (for application to new study subjects).  
+
+Since processing time is of some consideration here, we *explored* a random sample of the training data for the GBM model grid, and gave the faster treebag and ldabag models a more realistic 70/30 training/validation split.  Note that later, final model comparisons are done with all settings identical (70/30, 5 times repeated 10-fold resampling).
+
+The summarized model results were then examined and the model chosen.  In this code an option exists to select what R considers the "best" model, or the user can choose a less precise version of the model, in consideration of overtraining.  The top five "next best" models generated from the grid are available.  For example, the GBM models do well for these data, but if the variation in a new sample were high, due to say a different set of participants, the option to back off the best fitting model and use a more simplified set of parameters exists.
+
+#### Gradient Boosting Model (GBM)
+
+```{r 'run settings', echo=F}
+#############################################################################################################
+testrun_portion<-.1
+testrun_foldsx<-4
+testrun_repeatsx<-2
+
+final_portion<-.7
+final_foldsx<-2
+final_repeatsx<-2
+#############################################################################################################
+```
+
+```{r 'gbmFit_dotx', echo=F, warning=F, results='hide', message=F, cache=T}
+suppressPackageStartupMessages(library(doParallel))
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(123)
+
+main<-no_final
+
+impute_methodx<-c("center","scale","YeoJohnson")
+
+(basex<-nrow(main))
+samplex<-sample(basex, floor(.1*basex))
+dfx<-main[samplex,]
+
+impute<-preProcess(dfx[,-1], method = impute_methodx, allowParallel=T)
+preprocessed<-predict(impute, dfx[,-1])
+
+gbmGrid<-expand.grid(interaction.depth = c(1, 5, 10),
+                        n.trees = (1:10)*50,
+                        shrinkage = c(0.1, 0.2, .3),
+                        n.minobsinnode = c(20, 50,100))
+nrow(gbmGrid)
+head(gbmGrid)
+
+fitControl<-trainControl(method = "repeatedcv", number = 4, repeats = 2, allowParallel = T)
+
+set.seed(825)
+
+gbmFit_dotx <- train(y=dfx$classe, x = preprocessed,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE,
+                 tuneGrid = gbmGrid)
+
+pred_dfx<-data.frame(ground_truth=dfx$classe, prediction=predict(gbmFit_dotx,preprocessed))
+confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)
+
+freshy<-main[-samplex,]
+preprocessed_freshy<-predict(impute, freshy[,-1])
+pred_freshy<-data.frame(ground_truth=freshy$classe, prediction=predict(gbmFit_dotx,preprocessed_freshy))
+confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)
+
+preprocessed_TESTING_net_new<-predict(impute, TESTING_net_new[,-31])
+pred_TESTING_net_new<-data.frame(ground_truth=TESTING_net_new$classe, prediction=predict(gbmFit_dotx,preprocessed_TESTING_net_new))
+confusionMatrix(pred_TESTING_net_new$prediction, pred_TESTING_net_new$ground_truth)
+
+stopCluster(cluster)
+registerDoSEQ()
+
+best_within_1pct<-cbind(tolerance="within 1 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 1, maximize = TRUE),1:6])
+best_within_2pct<-cbind(tolerance="within 2 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 2, maximize = TRUE),1:6])
+best_within_3pct<-cbind(tolerance="within 3 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 3, maximize = TRUE),1:6])
+best_within_4pct<-cbind(tolerance="within 4 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 4, maximize = TRUE),1:6])
+best_within_5pct<-cbind(tolerance="within 5 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 5, maximize = TRUE),1:6])
+
+(best_alternative_models<-rbind(best_within_1pct, best_within_2pct, best_within_3pct, best_within_4pct, best_within_5pct))
+
+##########################################
+# check the real stuff...
+temptesting<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+tempreal<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+t<-temptesting%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y)
+j<-predict(impute, TESTING)
+p<-predict(gbmFit_dotx, j)
+combo<-data.frame(cbind(t,p))
+(r<-tempreal%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y, classe)%>%inner_join(combo)%>%mutate(good=classe==p))
+##########################################
+nrow(dfx)
+round(confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)$overall,3)
+nrow(freshy)
+round(confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)$overall,3)
+nrow(TESTING_net_new)
+round(confusionMatrix(pred_TESTING_net_new$prediction, pred_TESTING_net_new$ground_truth)$overall,3)
+nrow(r)
+sum(r$good/20)
+```
+
+The Gradient Boosting Model was of interest -- particularly in the spirit of model tuning.  A `caret` grid of model tuning features was built to generate estimates using a variety of the `gbm` tuning parameters.  Below are the results, where one can see the increase in model performance as we adjust the required minimum in each branch of the tree (these form the columns), as well as how much information is retained for future branch development (shrinkage, forming the plot rows).  The plots themselves are of increasing accuracy, as we subject the model to more boosting iterations.  The model results are gathered and summarized, and we have a set of `r nrow(gbmGrid)` model objects in the end.  Using this approach, we have models competing with each other on various terms, and we can home in on patterns observed in the cross validation.
+
+```{r 'plots gbm', fig.width=8, fig.height=5, fig.align='center', dpi=300, echo=F}
+ggplot(gbmFit_dotx, main="gbmFit_dotx")+ggtitle("Repeated Cross Validation, GBM tuning matrix")
+```
+
+Each sub-plot has a color for the tree depths, where we see a reference depth of one, and more realistic depths of 5 and 10, with these having much higher Accuracy in the resampling. Another observation would be that the matrix above suggests requiring stricter pathways has noticeably less accuracy -- that is, a minimum of 100 in each node had to be satisfied, leaving fewer choices for the model to more tightly decide `classe`.  Also noteworthy are the effects of the shrinkage adjustments, where one observes initial Accuracy gains directly related to this tuning feature.
+
+#### Bagged, Boosted Trees (treebag)
+A second model was built using `treebag`, this model processes at a much faster rate than the GBM grid.  There are no tuning options for `treebag`.  A comparison follows.
+
+```{r 'treebagFit_dotx', echo=F, warning=F, results='hide', message=F, cache=T}
+suppressPackageStartupMessages(library(doParallel))
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(123)
+
+main<-no_final
+
+impute_methodx<-c("center","scale","YeoJohnson")
+
+(basex<-nrow(main))
+samplex<-sample(basex, floor(.7*basex))
+dfx<-main[samplex,]
+
+system.time(impute<-preProcess(dfx[,-1], method = impute_methodx, allowParallel=T))
+preprocessed<-predict(impute, dfx[,-1])
+
+fitControl<-trainControl(method = "repeatedcv", number = 4, repeats = 2, allowParallel = T)
+
+set.seed(825)
+
+treebagFit_dotx <- train(y=dfx$classe, x = preprocessed,
+                 method = "treebag",
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+pred_dfx<-data.frame(ground_truth=dfx$classe, prediction=predict(treebagFit_dotx,preprocessed))
+confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)
+
+freshy<-main[-samplex,]
+preprocessed_freshy<-predict(impute, freshy[,-1])
+pred_freshy<-data.frame(ground_truth=freshy$classe, prediction=predict(treebagFit_dotx,preprocessed_freshy))
+confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)
+
+TESTING_net_newx<-TESTING_net_new%>%mutate(roll_dumbbell=ifelse(is.na(roll_dumbbell)==T, mean(TESTING_net_new$roll_dumbbell, na.rm = T), roll_dumbbell))
+preprocessed_TESTING_net_newx<-predict(impute, TESTING_net_newx[,-31])
+pred_TESTING_net_newx<-data.frame(ground_truth=TESTING_net_newx$classe, prediction=predict(treebagFit_dotx,preprocessed_TESTING_net_newx))
+confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)
+
+stopCluster(cluster)
+registerDoSEQ()
+
+##########################################
+# check the real stuff...
+temptesting<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+tempreal<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+t<-temptesting%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y)
+j<-predict(impute, TESTING)
+p<-predict(treebagFit_dotx, j)
+combo<-data.frame(cbind(t,p))
+(r<-tempreal%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y, classe)%>%inner_join(combo)%>%mutate(good=classe==p))
+##########################################
+nrow(dfx)
+round(confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)$overall,3)
+nrow(freshy)
+round(confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)$overall,3)
+nrow(TESTING_net_newx)
+nrow(TESTING_net_new)
+round(confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)$overall,3)
+nrow(r)
+sum(r$good/20)
+```
+
+#### Bagged Linear Discriminate Analysis (lda)
+A third `lda` model was built as well, again there are no tuning parameters for this model, and similar to the `treebag` the processing time was reasonable (less than 15 minutes).
+
+```{r 'ldaFit_dotx', echo=F, warning=F, results='hide', message=F, cache=T}
+suppressPackageStartupMessages(library(doParallel))
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(123)
+
+main<-no_final
+
+impute_methodx<-c("center","scale","YeoJohnson")
+
+(basex<-nrow(main))
+samplex<-sample(basex, floor(.7*basex))
+dfx<-main[samplex,]
+
+system.time(impute<-preProcess(dfx[,-1], method = impute_methodx, allowParallel=T))
+preprocessed<-predict(impute, dfx[,-1])
+
+fitControl<-trainControl(method = "repeatedcv", number = 4, repeats = 2, allowParallel = T)
+
+set.seed(825)
+
+ldaFit_dotx <- train(y=dfx$classe, x = preprocessed,
+                 method = "lda",
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+pred_dfx<-data.frame(ground_truth=dfx$classe, prediction=predict(ldaFit_dotx,preprocessed))
+confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)
+
+freshy<-main[-samplex,]
+preprocessed_freshy<-predict(impute, freshy[,-1])
+pred_freshy<-data.frame(ground_truth=freshy$classe, prediction=predict(ldaFit_dotx,preprocessed_freshy))
+confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)
+
+TESTING_net_newx<-TESTING_net_new%>%mutate(roll_dumbbell=ifelse(is.na(roll_dumbbell)==T, mean(TESTING_net_new$roll_dumbbell, na.rm = T), roll_dumbbell))
+preprocessed_TESTING_net_newx<-predict(impute, TESTING_net_newx[,-31])
+pred_TESTING_net_newx<-data.frame(ground_truth=TESTING_net_newx$classe, prediction=predict(ldaFit_dotx,preprocessed_TESTING_net_newx))
+confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)
+
+stopCluster(cluster)
+registerDoSEQ()
+
+##########################################
+# check the real stuff...
+temptesting<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+tempreal<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+t<-temptesting%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y)
+j<-predict(impute, TESTING)
+p<-predict(ldaFit_dotx, j)
+combo<-data.frame(cbind(t,p))
+(r<-tempreal%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y, classe)%>%inner_join(combo)%>%mutate(good=classe==p))
+##########################################
+nrow(dfx)
+round(confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)$overall,3)
+nrow(freshy)
+round(confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)$overall,3)
+nrow(TESTING_net_newx)
+nrow(TESTING_net_new)
+round(confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)$overall,3)
+nrow(r)
+sum(r$good/20)
+```
+
+## Selecting the Classification Model
+
+#### Cross Validation
+Cross validation was performed using 10-folds of the training data, repeated five times.  Output below shows not only differences in Accuracy (placement on plot), but the pattern of solutions (indicated by the width), including variance.
+
+```{r 'gbmFit_dotxfinal', echo=F, warning=F, message=F, results=F, cache=T}
+suppressPackageStartupMessages(library(doParallel))
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(123)
+
+choice<-2
+use_best<-"yes"
+
+best_within_1pct<-cbind(tolerance="within 1 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 1, maximize = TRUE),1:6])
+best_within_2pct<-cbind(tolerance="within 2 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 2, maximize = TRUE),1:6])
+best_within_3pct<-cbind(tolerance="within 3 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 3, maximize = TRUE),1:6])
+best_within_4pct<-cbind(tolerance="within 4 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 4, maximize = TRUE),1:6])
+best_within_5pct<-cbind(tolerance="within 5 pct", gbmFit_dotx$results[tolerance(gbmFit_dotx$results, metric = "Accuracy", tol = 5, maximize = TRUE),1:6])
+
+(best_alternative_models<-rbind(best_within_1pct, best_within_2pct, best_within_3pct, best_within_4pct, best_within_5pct))
+
+(shrinkagex<-best_alternative_models[choice,2])
+(interactiondepthx<-best_alternative_models[choice,3])
+(nminobsinnodex<-best_alternative_models[choice,4])
+(ntreesx<-best_alternative_models[choice,5])
+
+if(use_best=="yes") (shrinkagex<-gbmFit_dotx$results[best(gbmFit_dotx$results, "Accuracy", maximize = T),1])
+if(use_best=="yes") (interactiondepthx<-gbmFit_dotx$results[best(gbmFit_dotx$results, "Accuracy", maximize = T),2])
+if(use_best=="yes") (nminobsinnodex<-gbmFit_dotx$results[best(gbmFit_dotx$results, "Accuracy", maximize = T),3]);
+if(use_best=="yes") (ntreesx<-gbmFit_dotx$results[best(gbmFit_dotx$results, "Accuracy", maximize = T),4])
+
+main<-no_final
+
+impute_methodx<-c("center","scale","YeoJohnson")
+
+(basex<-nrow(main))
+samplex<-sample(basex, floor(final_portion*basex))
+dfx<-main[samplex,]
+
+system.time(impute<-preProcess(dfx[,-1], method = impute_methodx, allowParallel=T))
+preprocessed<-predict(impute, dfx[,-1])
+
+gbmGrid<-expand.grid(interaction.depth = interactiondepthx,
+                        n.trees = ntreesx,
+                        shrinkage = shrinkagex,
+                        n.minobsinnode = nminobsinnodex)
+nrow(gbmGrid)
+head(gbmGrid)
+
+fitControl<-trainControl(method = "repeatedcv", number = final_foldsx, repeats = final_repeatsx, allowParallel = T)
+
+set.seed(825)
+
+gbmFit_dotxfinal <- train(y=dfx$classe, x = preprocessed,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE,
+                 tuneGrid = gbmGrid)
+
+pred_dfx<-data.frame(ground_truth=dfx$classe, prediction=predict(gbmFit_dotxfinal,preprocessed))
+confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)
+
+freshy<-main[-samplex,]
+preprocessed_freshy<-predict(impute, freshy[,-1])
+pred_freshy<-data.frame(ground_truth=freshy$classe, prediction=predict(gbmFit_dotxfinal,preprocessed_freshy))
+confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)
+
+preprocessed_TESTING_net_new<-predict(impute, TESTING_net_new[,-31])
+pred_TESTING_net_new<-data.frame(ground_truth=TESTING_net_new$classe, prediction=predict(gbmFit_dotxfinal,preprocessed_TESTING_net_new))
+confusionMatrix(pred_TESTING_net_new$prediction, pred_TESTING_net_new$ground_truth)
+
+# special, store this models freshy
+freshy_gbm<-freshy
+impute_gbm<-impute
+
+stopCluster(cluster)
+registerDoSEQ()
+
+##########################################
+# check the real stuff...
+temptesting<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+tempreal<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+t<-temptesting%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y)
+j<-predict(impute, TESTING)
+p<-predict(gbmFit_dotxfinal, j)
+combo<-data.frame(cbind(t,p))
+(r<-tempreal%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y, classe)%>%inner_join(combo)%>%mutate(good=classe==p))
+##########################################
+nrow(dfx)
+round(confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)$overall,3)
+nrow(freshy)
+round(confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)$overall,3)
+nrow(TESTING_net_new)
+round(confusionMatrix(pred_TESTING_net_new$prediction, pred_TESTING_net_new$ground_truth)$overall,3)
+nrow(r)
+sum(r$good/20)
+```
+
+```{r 'treebagFit_dotxfinal', echo=F, warning=F, message=F, results=F, cache=T}
+suppressPackageStartupMessages(library(doParallel))
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(123)
+
+main<-no_final
+
+impute_methodx<-c("center","scale","YeoJohnson")
+
+(basex<-nrow(main))
+samplex<-sample(basex, floor(final_portion*basex))
+dfx<-main[samplex,]
+
+system.time(impute<-preProcess(dfx[,-1], method = impute_methodx, allowParallel=T))
+preprocessed<-predict(impute, dfx[,-1])
+
+fitControl<-trainControl(method = "repeatedcv", number = final_foldsx, repeats = final_repeatsx, allowParallel = T)
+
+set.seed(825)
+
+treebagFit_dotxfinal <- train(y=dfx$classe, x = preprocessed,
+                 method = "treebag",
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+pred_dfx<-data.frame(ground_truth=dfx$classe, prediction=predict(treebagFit_dotxfinal,preprocessed))
+confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)
+
+freshy<-main[-samplex,]
+preprocessed_freshy<-predict(impute, freshy[,-1])
+pred_freshy<-data.frame(ground_truth=freshy$classe, prediction=predict(treebagFit_dotxfinal,preprocessed_freshy))
+confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)
+
+TESTING_net_newx<-TESTING_net_new%>%mutate(roll_dumbbell=ifelse(is.na(roll_dumbbell)==T, mean(TESTING_net_new$roll_dumbbell, na.rm = T), roll_dumbbell))
+preprocessed_TESTING_net_newx<-predict(impute, TESTING_net_newx[,-31])
+pred_TESTING_net_newx<-data.frame(ground_truth=TESTING_net_newx$classe, prediction=predict(treebagFit_dotxfinal,preprocessed_TESTING_net_newx))
+confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)
+
+# special, store this models freshy
+freshy_treebag<-freshy
+impute_treebag<-impute
+
+stopCluster(cluster)
+registerDoSEQ()
+
+##########################################
+# check the real stuff...
+temptesting<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+tempreal<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+t<-temptesting%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y)
+j<-predict(impute, TESTING)
+p<-predict(treebagFit_dotxfinal, j)
+combo<-data.frame(cbind(t,p))
+(r<-tempreal%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y, classe)%>%inner_join(combo)%>%mutate(good=classe==p))
+##########################################
+nrow(dfx)
+round(confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)$overall,3)
+nrow(freshy)
+round(confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)$overall,3)
+nrow(TESTING_net_newx)
+nrow(TESTING_net_new)
+round(confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)$overall,3)
+nrow(r)
+sum(r$good/20)
+```
+
+```{r 'ldaFit_dotxfinal', echo=F, warning=F, message=F, results=F, cache=T}
+suppressPackageStartupMessages(library(doParallel))
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(123)
+
+main<-no_final
+
+impute_methodx<-c("center","scale","YeoJohnson")
+
+(basex<-nrow(main))
+samplex<-sample(basex, floor(final_portion*basex))
+dfx<-main[samplex,]
+
+system.time(impute<-preProcess(dfx[,-1], method = impute_methodx, allowParallel=T))
+preprocessed<-predict(impute, dfx[,-1])
+
+fitControl<-trainControl(method = "repeatedcv", number = final_foldsx, repeats = final_repeatsx, allowParallel = T)
+
+set.seed(825)
+
+ldaFit_dotxfinal <- train(y=dfx$classe, x = preprocessed,
+                 method = "lda",
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+pred_dfx<-data.frame(ground_truth=dfx$classe, prediction=predict(ldaFit_dotxfinal,preprocessed))
+confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)
+
+freshy<-main[-samplex,]
+preprocessed_freshy<-predict(impute, freshy[,-1])
+pred_freshy<-data.frame(ground_truth=freshy$classe, prediction=predict(ldaFit_dotxfinal,preprocessed_freshy))
+confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)
+
+TESTING_net_newx<-TESTING_net_new%>%mutate(roll_dumbbell=ifelse(is.na(roll_dumbbell)==T, mean(TESTING_net_new$roll_dumbbell, na.rm = T), roll_dumbbell))
+preprocessed_TESTING_net_newx<-predict(impute, TESTING_net_newx[,-31])
+pred_TESTING_net_newx<-data.frame(ground_truth=TESTING_net_newx$classe, prediction=predict(ldaFit_dotxfinal,preprocessed_TESTING_net_newx))
+confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)
+
+# special, store this models freshy
+freshy_lda<-freshy
+impute_lda<-impute
+
+stopCluster(cluster)
+registerDoSEQ()
+
+##########################################
+# check the real stuff...
+temptesting<-data.frame(read_csv("pml-testing.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+tempreal<-data.frame(read_csv("WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", na=c("NA", "#DIV/0!")), stringsAsFactors = F)
+t<-temptesting%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y)
+j<-predict(impute, TESTING)
+p<-predict(ldaFit_dotx, j)
+combo<-data.frame(cbind(t,p))
+(r<-tempreal%>%select(user_name, raw_timestamp_part_1, raw_timestamp_part_2, gyros_belt_x, gyros_belt_y, classe)%>%inner_join(combo)%>%mutate(good=classe==p))
+##########################################
+nrow(dfx)
+round(confusionMatrix(pred_dfx$prediction, pred_dfx$ground_truth)$overall,3)
+nrow(freshy)
+round(confusionMatrix(pred_freshy$prediction, pred_freshy$ground_truth)$overall,3)
+nrow(TESTING_net_newx)
+nrow(TESTING_net_new)
+round(confusionMatrix(pred_TESTING_net_newx$prediction, pred_TESTING_net_newx$ground_truth)$overall,3)
+nrow(r)
+sum(r$good/20)
+```
+
+```{r 'resamples analysis', echo=F, warning=F, message=F, fig.width=8, fig.height=4, fig.align='center', comment="", dpi=300}
+resamps<-resamples(list(
+	gbm = gbmFit_dotxfinal,
+	ldabag = ldaFit_dotxfinal,
+	treebag = treebagFit_dotxfinal))
+summary(resamps)$statistics[1]
+summary(resamps)$statistics[2]
+ggplot(resamps)+aes(color=resamps$models)+ggtitle("Resamples Stability")
+```
+
+We can see above that we would have XXXXX 
+
+The variables selected as important are below:
+
+
+## Testing the models
+With a final model chosen (in the case of GBM), we have three models to run against the validation subset of our data.  Recall these models were built on `r final_portion*100`% of the training data, leaving `r (1-final_portion)*100`% as a completely fresh sample.  
+
+From the `caret` documentation...For multi-class outcomes, the problem is decomposed into all pair-wise problems and the area under the curve is calculated for each class pair (i.e. class 1 vs. class 2, class 2 vs. class 3 etc.). For a specific class, the maximum area under the curve across the relevant pair-wise AUC’s is used as the variable importance measure.
+
+```{r 'plot predictions', echo=F, fig.width=8, fig.height=5, fig.cap="**Prediction versus Truth**", fig.align='center', dpi=300}
+freshyx<-predict(impute_gbm, freshy_gbm)
+gbm<-ggplot(mapping=aes(x=freshy_gbm$classe, y=predict(gbmFit_dotxfinal, freshyx), color=freshy_gbm$classe))+
+       	geom_jitter(show.legend = F)+xlab("")+ylab("Predicted classe")+ggtitle("GBM")
+freshyx<-predict(impute_treebag, freshy_treebag)
+treebag<-ggplot(mapping=aes(x=freshy_treebag$classe, y=predict(treebagFit_dotxfinal, freshyx), color=freshy_treebag$classe))+
+       	geom_jitter(show.legend = F)+xlab("Truth")+ylab("")+ggtitle("treebag")
+freshyx<-predict(impute_lda, freshy_lda)
+lda<-ggplot(mapping=aes(x=freshy_lda$classe, y=predict(ldaFit_dotxfinal, freshyx), color=freshy_lda$classe))+
+       	geom_jitter(show.legend = F)+xlab("")+ylab("")+ggtitle("ldabag")
+grid.arrange(gbm, treebag, lda, nrow = 1)
+```
+
+## Choices made
+
+## Summary
+
+### Citations
+The data used in this analysis were graciously provided by the Human Activity Recognition website, which can be accesed [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har). Thank you HAR!
+
+## System Information
+This work was developed on the following system, using `R.version.string`:
+
+`r system("system_profiler SPHardwareDataType | grep 'Model Name:'", intern=TRUE)`
+`r system("system_profiler SPHardwareDataType | grep 'Processor Name:'", intern=TRUE)`
+`r system("system_profiler SPHardwareDataType | grep 'Memory:'", intern=TRUE)`
+
+The following R libraries were utilized:
+
+`library(tidyverse)`
+`library(rattle)`
+`library(Hmisc)`
+`library(corrgram)`
+`library(caret)`
+`library(gridExtra)`
+`library(adabag)`
+`library(fastAdaboost)`
+`library(rlist)`
+`library(stringi)`

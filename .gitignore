@@ -1,0 +1,10 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+pml-testing.csv
+pml-training.csv
+WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv
+/index_cache
+/index_files
+pml.Rproj
