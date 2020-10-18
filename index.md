@@ -1,10 +1,7 @@
 ---
 title: "Practical Machine Learning course project"
 author: "Ray Bem"
-date: 10/17/2020
-output: 
-  html_document: 
-    keep_md: yes
+date: "10/17/2020"
 ---
 
 
