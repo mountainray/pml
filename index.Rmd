@@ -90,6 +90,7 @@ corr_matrix<-abs(cor(training_new_window_no[,-1]))
 diag(corr_matrix)<-0
 high_corr_no<-unique(names(which(corr_matrix>high_correlation_cutoff_no, arr.ind = T)[,1]))
 (lst_high_corr_no<-which(names(training_new_window_no) %in% high_corr_no))
+corr_matrix_no<-corr_matrix
 
 corr_matrix<-abs(cor(training_new_window_yes[,-1]))
 diag(corr_matrix)<-0
@@ -162,7 +163,7 @@ head(TESTING_net_new[1:10,1:10])
 The data came in the form of a comma separated file with 160 features and `r nrow(original_training)` observations.  
 
 #### Character and Time variable reduction
-Sample prints and diagnostics identified a small subset of variables that we set aside as they describe elements not included in this effort.  For example, the `user_name` variable adds a user-specific dimension if included in the models, we are trying to build here a classifier independent of user.  Also, the usefullness of the time variables was difficult to assess, the [original paper](http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) goes into more detail on how these "yes" records are calculated (e.g., sliding 2.5s intervals).  The table below summarizes our first attempt to reduce covariates.
+Sample prints and diagnostics identified a small subset of variables that we set aside as they describe elements not included in this effort.  For example, the `user_name` variable adds a user-specific dimension if included in the models, we are trying to build here a classifier independent of user.  Also, the usefulness of the time variables was difficult to assess, the [original paper](http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) goes into more detail on how these `new_window = yes` records are calculated (e.g., sliding 2.5s intervals).  The table below summarizes our first attempt to reduce covariates.
 
 ```{r 'junk-vars table', echo=F}
 junk_drops<-data.frame(
@@ -181,56 +182,78 @@ reason_removed=c(
 "time disregarded in this analysis",
 "",
 "",
-"these are the 'yes' data, n=406",
+"used to separate 'yes' data, n=406",
 "an incremental window counter"))
 
 knitr::kable(junk_drops, caption = str_c("**Character and Time variables removed from consideration (n=7)**"))
 ```
 
-With relatively high dimensionality, summary functions were used to highlight characteristics.  The first aspect examined was the `new_window` variable.  This was determined to be a summarization of detail records tagged with "no", and set aside early in the code.  In the "yes" data, most columns had more data for several fields, when compared with the "no" data.  As our goal is the simplest classifier as possible, and the summary data looked so much different than the bulk of the data, these were left out (n=406).  The remainder of this analysis focuses on the "no" data, `r nrow(no_final)` records.
+With relatively high dimensionality, summary functions were used to highlight characteristics.  The first aspect examined was the `new_window` variable.  This was determined to be a summarization of detail records tagged with "no", and set aside early in the code.  In the "yes" data, most columns had more data for several fields, when compared with the "no" data.  As our goal is the simplest classifier as possible, and the summary data looked so much different than the bulk of the data, these were left out (n=`r nrow(yes_final)`).  The remainder of this analysis focuses on the "no" data, `r nrow(no_final)` records.
 
 #### Highly correlated variable reduction
-The `cor` function was used to identify correlations above `r high_correlation_cutoff_no*100` percent, the user sets the cutoff value at the top of the code. Currently this is set at `r high_correlation_cutoff_no`, we found `r nrow(filter(varmap, is.na(high_corr_no)==F))` highly correlated variables in the "no" new_window data.  As we know the nature of the measurements should include things that will correlate (there are only three dimensions being measured on a single body with a limited, intended motion), we leave some correlated covariates in the model (i.e., we don't exclude all correlated varaiables).  Below is a summary drawn from the `varmap` dataset created in the processing:
+The `cor` function was used to identify correlations above `r high_correlation_cutoff_no*100`%, the user sets the cutoff value at the top of the code. Currently this is set at `r high_correlation_cutoff_no*100`%, we found `r nrow(filter(varmap, is.na(high_corr_no)==F))` highly correlated variables at this cutoff in the "no" new_window data.
+
+As a processing aside, some of the tests were performed using R functions as opposed to simply allowing the `caret` package to perform during the `preProcess`.  This was done to allow more insight into the data, particularly during the exporatory phase.
+
+As we know the nature of the measurements should include things that will correlate (there are only three dimensions being measured on a single body with a limited, intended motion), we leave some correlated covariates in the model (i.e., we don't exclude all correlated variables).  For example, an analysis of a dance movement would have more complicated relationships and a more strict reduction of covarying covariates might be fine, here, the motion is so limited.  Below is a summary drawn from the `varmap` dataset created in the processing, displaying a sample of these exclusions:
 
 ```{r 'high-correlation-table', echo=F}
 nox<-filter(varmap, is.na(high_corr_no)==F)%>%select(varname, varindex, high_corr_no)
-knitr::kable(nox[1:10,], caption = str_c("**High Correlation variables removed from consideration (n=", nrow(nox),", sample of 10 below)**"))
+knitr::kable(nox[1:5,], caption = str_c("**High Correlation variables removed from consideration (n=", nrow(nox),", sample of 5 below)**"))
 ```
 
 #### Low or near-zero variance variable reduction
-In a similar fashion, the r function `nearzeroVariance` was used to identify variables that would add little additional information to our models.  We again examined the output and concluded these would be left out.  This process identified `r nrow(filter(varmap, is.na(nzv_no)==F))` variables with low variance, these were removed.
+In a similar fashion, the R function `nearzeroVariance` was used to identify variables that would add little additional information to our models.  We again examined the output and concluded these would be left out.  This process identified `r nrow(filter(varmap, is.na(nzv_no)==F))` variables with zero variance, these were removed.
 
 ```{r 'nzv-reduction-table', echo=F}
 nox<-filter(varmap, is.na(nzv_no)==F & is.na(high_corr_no)==T & is.na(source1)==T)%>%select(varname, varindex, freqRatio, percentUnique, zeroVar)
-knitr::kable(nox[1:10,], caption = str_c("**Near-zero Variance variables removed from consideration (n=", nrow(nox),", sample of 10 below)**"))
+knitr::kable(nox[1:5,], caption = str_c("**Near-zero Variance variables removed from consideration (n=", nrow(nox),", sample of 5 below)**"))
 ```
 
 #### Missing data
-Finally, missing data were explored.  At this point we have only the detail "no" data, and highly correlated and near-zero variance variables have been removed.  We observe no missing data, therefore our model choices do not require any imputation of data.
+Finally, missing data were explored.  At this point we have only the detail "no" data, and highly correlated and near-zero variance variables have been removed.  We observe no missing data, a convenience as our model choices do not require any imputation of data.
 
 #### Final data
-This yields a final modelling dataset having the following characteristics...
+This yields a final modeling dataset having the following characteristics...at this point the dimensionality has been thoughtfully reduced, addressing covariance, near-zero variance, and missing data realities.  
+
+Before we traded computational speed for accuracy, in an effort to see the behavior of the model tuning features (for GBM).  Some observations:
+
+1. Even with a great deal of dimension reduction, we have some hopeful model results -- we are not way off
+2. Adjusting how the GBM models are fit allows some flexibility to react to overfitting (by choosing a less than "best" solution)
+3. The same variables are seen as important across models (covered later)
+
+The model building comes next, where the amount of data and repeated cross validation are expanded.
+
+```{r 'final-model-data', echo=F}
+observations<-nrow(no_final)
+variables<-ncol(no_final)
+knitr::kable(data.frame(head(no_final[1:5,1:6])), caption = "Sample Print of final dataset")
+knitr::kable(data.frame(observations, variables), caption = "Dimensions")
+knitr::kable(data.frame(count(no_final, classe)), caption = "Distribution of classe variable")
+```
+
+```{r 'run-settings', echo=F}
+#############################################################################################################
+testrun_portion<-.1
+# testrun_foldsx<-4
+# testrun_repeatsx<-2
+
+final_portion<-.1
+final_foldsx<-5
+final_repeatsx<-4
+#############################################################################################################
+```
 
 ## Building the classification model
-A *modelling process* was built to more easily explore the data.  The R package `caret` was used to create data partitions separating training data into a set to build models on, and a set to test.  These test data are used afterwards to assess our estimated out of sample error rate (for application to new study subjects).  
+A *modeling process* was built to more easily explore the data.  The R package `caret` was used to create data partitions separating training data into a set to build models on, and a set to test.  These test data are used afterwards to assess our estimated out of sample error rate (for application to new study subjects).  
 
-Since processing time is of some consideration here, we *explored* a random sample of the training data for the GBM model grid, and gave the faster treebag and ldabag models a more realistic 70/30 training/validation split.  Note that later, final model comparisons are done with all settings identical (70/30, 5 times repeated 10-fold resampling).
+Since processing time is of some consideration here, we *explored* a smaller (`r testrun_portion*100`/`r (1-testrun_portion)*100`random sample of the training data for the GBM model grid, and gave the faster treebag and ldabag models a more realistic 70/30 training/validation split.  
+
+The final model comparisons are done with all settings identical (70/30 training/test, 5 times repeated resampling on 10 folds).
 
 The summarized model results were then examined and the model chosen.  In this code an option exists to select what R considers the "best" model, or the user can choose a less precise version of the model, in consideration of overtraining.  The top five "next best" models generated from the grid are available.  For example, the GBM models do well for these data, but if the variation in a new sample were high, due to say a different set of participants, the option to back off the best fitting model and use a more simplified set of parameters exists.
 
 #### Gradient Boosting Model (GBM)
-
-```{r 'run-settings', echo=F}
-#############################################################################################################
-# testrun_portion<-.1
-# testrun_foldsx<-4
-# testrun_repeatsx<-2
-
-final_portion<-.3
-final_foldsx<-2
-final_repeatsx<-2
-#############################################################################################################
-```
 
 ```{r 'gbmFit_dotx', echo=F, warning=F, results='hide', message=F, cache=T}
 suppressPackageStartupMessages(library(doParallel))
@@ -310,16 +333,20 @@ nrow(r)
 sum(r$good/20)
 ```
 
-The Gradient Boosting Model was of interest -- particularly in the spirit of model tuning.  A `caret` grid of model tuning features was built to generate estimates using a variety of the `gbm` tuning parameters.  Below are the results, where one can see the increase in model performance as we adjust the required minimum in each branch of the tree (these form the columns), as well as how much information is retained for future branch development (shrinkage, forming the plot rows).  The plots themselves are of increasing accuracy, as we subject the model to more boosting iterations.  The model results are gathered and summarized, and we have a set of `r nrow(gbmGrid)` model objects in the end.  Using this approach, we have models competing with each other on various terms, and we can home in on patterns observed in the cross validation.
+The Gradient Boosting Model was of interest -- particularly in the spirit of model tuning.  A `caret` grid of variations of model tuning features was built to generate estimates using a variety of the `gbm` tuning parameters.  This allowed for the exploration of 270 models in a convenient way (less code, obviously).
+
+Below are the results, where one can see the increase in model performance as we adjust the required minimum in each branch of the tree (these form the columns), as well as how much information is retained for future branch development (shrinkage, forming the plot rows).  The plots themselves are of increasing accuracy, as we subject the model to more boosting iterations.  The model results are gathered and summarized, and we have a set of `r nrow(gbmGrid)` model objects in the end.  
+
+Using this approach, we have models competing with each other on various tuning features, and we can see the behavior and effects of the tuning on the Accuracy rates.  Again, these are possible given the smaller data for the GBM set, but clearly one can see how the tuning is working.
 
 ```{r 'plots-gbm', fig.width=8, fig.height=5, fig.align='center', dpi=300, echo=F}
 ggplot(gbmFit_dotx, main="gbmFit_dotx")+ggtitle("Repeated Cross Validation, GBM tuning matrix")
 ```
 
-Each sub-plot has a color for the tree depths, where we see a reference depth of one, and more realistic depths of 5 and 10, with these having much higher Accuracy in the resampling. Another observation would be that the matrix above suggests requiring stricter pathways has noticeably less accuracy -- that is, a minimum of 100 in each node had to be satisfied, leaving fewer choices for the model to more tightly decide `classe`.  Also noteworthy are the effects of the shrinkage adjustments, where one observes initial Accuracy gains directly related to this tuning feature.
+Each sub-plot has a color for the tree depths, where we see a reference depth of one, and more realistic depths of 5 and 10, with these having much higher Accuracy in the resampling. Another observation would be that the matrix above suggests requiring stricter pathways has noticeably less accuracy -- that is, a minimum of 100 in each node had to be satisfied (column 3), leaving fewer choices for the model to more tightly decide `classe`.  Also noteworthy are the effects of the shrinkage adjustments, where one observes initial Accuracy gains directly related to this tuning feature, which controls the learning rate.  When dialed down to .1, the model "forgets" it's current mapping and has a wider set of choices to solve (ergo higher performance).
 
 #### Bagged, Boosted Trees (treebag)
-A second model was built using `treebag`, this model processes at a much faster rate than the GBM grid.  There are no tuning options for `treebag`.  A comparison follows.
+A second model was built using `treebag`, this model processes at a much faster rate than the GBM grid.  There are no tuning options for `treebag`.  A comparison will follow.
 
 ```{r 'treebagFit_dotx', echo=F, warning=F, results='hide', message=F, cache=T}
 suppressPackageStartupMessages(library(doParallel))
@@ -385,8 +412,8 @@ nrow(r)
 sum(r$good/20)
 ```
 
-#### Bagged Linear Discriminate Analysis (lda)
-A third `lda` model was built as well, again there are no tuning parameters for this model, and similar to the `treebag` the processing time was reasonable (less than 15 minutes).
+#### Bagged Linear Discriminate Analysis (LDA)
+A third `lda` model was built as well, again there are no tuning parameters for this model, and similar to the `treebag` the processing time was reasonable (less than 5 minutes).  Next we will examine the resamples to check for out of sample error expectations.
 
 ```{r 'ldaFit_dotx', echo=F, warning=F, results='hide', message=F, cache=T}
 suppressPackageStartupMessages(library(doParallel))
@@ -455,7 +482,7 @@ sum(r$good/20)
 ## Selecting the Classification Model
 
 #### Cross Validation
-Cross validation was performed using 10-folds of the training data, repeated five times.  Output below shows not only differences in Accuracy (placement on plot), but the pattern of solutions (indicated by the width), including variance.
+Cross validation was performed using 10-folds of the training data, repeated five times.  Output below shows not only differences in Accuracy (placement on plot), but the pattern of solutions, including variance (indicated by the width).
 
 ```{r 'gbmFit_dotxfinal', echo=F, warning=F, message=F, results=F, cache=T}
 suppressPackageStartupMessages(library(doParallel))
@@ -693,19 +720,25 @@ resamps<-resamples(list(
 	gbm = gbmFit_dotxfinal,
 	ldabag = ldaFit_dotxfinal,
 	treebag = treebagFit_dotxfinal))
-summary(resamps)$statistics[1]
-summary(resamps)$statistics[2]
-ggplot(resamps)+aes(color=resamps$models)+ggtitle("Resamples Stability")
+#summary(resamps)$statistics[1]
+#summary(resamps)$statistics[2]
+ggplot(resamps)+aes(color=resamps$models)+ggtitle("Model Accuracy over repeated Cross Validated samples")+ylab("Accuracy")
 ```
 
-We can see above that we would have XXXXX 
-
-The variables selected as important are below:
-
-## Testing the models
-With a final model chosen (in the case of GBM), we have three models to run against the validation subset of our data.  Recall these models were built on `r final_portion*100`% of the training data, leaving `r (1-final_portion)*100`% as a completely fresh sample.  
+#### Variable Importance
+Below are output from two of our models, the GBM model does not have an analog that works in `knitr`, but results are similar.  Noteworthy is the agreement across the two lists, though in a different format, each indicates the same important variables affecting the classifications.  For example, the magnet dimensions play a huge role in these classifiers.  
 
 From the `caret` documentation...For multi-class outcomes, the problem is decomposed into all pair-wise problems and the area under the curve is calculated for each class pair (i.e. class 1 vs. class 2, class 2 vs. class 3 etc.). For a specific class, the maximum area under the curve across the relevant pair-wise AUC’s is used as the variable importance measure.
+
+```{r importance, comment="", echo=F}
+treebagImportance<-varImp(treebagFit_dotxfinal)
+treebagImportance
+ldaImportance<-varImp(ldaFit_dotxfinal)
+ldaImportance
+```
+
+## Testing the models -- predicting new data
+With a final model chosen (in the case of GBM), we have three models to run against the validation subset of our data.  Recall these models were built on `r final_portion*100`% of the training data, leaving `r (1-final_portion)*100`% as a completely fresh sample.  
 
 ```{r 'plot-predictions', echo=F, fig.width=8, fig.height=5, fig.cap="**Prediction versus Truth**", fig.align='center', dpi=300}
 freshyx<-predict(impute_gbm, freshy_gbm)
